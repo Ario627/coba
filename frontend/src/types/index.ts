@@ -33,31 +33,3 @@ export interface Schedule {
     imageUrl?: string;
 }
 
-export interface MessagePayload {
-    name: string;
-    message: string;
-}
-
- export type RequestOptions = {
-    cacheKey?: string;
-    revalidate?: number;
-    signal?: AbortSignal;
-    skipCache?: boolean;
-};
-
-export interface MessageRecord extends MessagePayload {
-    _id: string;
-    date: string;
-}
-
-export type EventDTO = {
-    _id?: string;
-    id?: string;
-    title: string;
-    description?: string;
-    date:  string;
-    location: string;
-    startTime?:  string;
-    endTime?: string;
-    imageUrl?: string;
-}

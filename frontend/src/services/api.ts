@@ -1,10 +1,13 @@
-import "server-only";
+import 'server-only';
 
 import axios, {AxiosInstance, AxiosRequestConfig} from "axios";
-import {Redis} from "@upstash/redis";
-import {createHash} from "node:crypto";
-import {parseISO} from "date-fns";
-import type {ErineProfile, GalleryImage, Schedule} from "@/types";
+import { Redis } from '@upstash/redis'; 
+import { createHash } from 'node:crypto';
+import { parseISO } from 'date-fns';
+import type { ErineProfile, GalleryImage, Schedule } from '@/types';
+import { a, pattern } from 'framer-motion/client';
+import { Regex } from 'lucide-react';
+import { skip } from 'node:test';
 
 export interface MessagePayload {
     name: string;
@@ -22,7 +25,7 @@ export type RequestOptions = {
     revalidate?: number;
     signal?: AbortSignal;
     skipCache?: boolean;
-};
+}
 
 type EventDTO = {
     _id?: string;
@@ -30,29 +33,29 @@ type EventDTO = {
     title: string;
     description?: string;
     date: string;
-    location?: string;
+    loccation?: string;
     startTime?: string;
     endTime?: string;
     imageUrl?: string;
-};
+}
 
 const DEFAULT_CACHE_TTL = 30_000;
 const JSON_HEADERS = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
 };
-const CACHE_NAMESPACE = "erine:cache:";
-const TAG_NAMESPACE = "erine:cache-tag:";
-const TAG_REGISTRY_KEY = `${TAG_NAMESPACE}__all`;
+const CACHE_NAMESPACE = 'erine:cache:';
+const  TAG_NAMESPACE = 'erine:cache-tag';
+const TAG_REGISTRY_KEY  = `${TAG_NAMESPACE}__all`;
 const TAG_TTL_BUFFER_SECONDS = 5;
 
-const sharedRedis = (() => {
+const sharedRedis =(() => {
     try {
         return Redis.fromEnv();
-    } catch (error) {
+    } catch(error) {
         throw new Error(
-            "Upstash Redis environment variables are missing. Please set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
-            {cause: error as Error},
+            "Upstash Radis environment variables are missing. Please set UPTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
+            {cause:  error as Error}
         );
     }
 })();
@@ -62,7 +65,7 @@ export class ErineAPI {
     private baseURL: string;
     private redis: Redis;
 
-    constructor(baseURL: string = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:3000/api", redis: Redis = sharedRedis) {
+    constructor(baseURL: string = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:4000/api", redis: Redis = sharedRedis) {
         this.baseURL = baseURL;
         this.redis = redis;
         this.api = axios.create({
@@ -80,26 +83,49 @@ export class ErineAPI {
         );
     }
 
-    withBaseURL(baseURL: string) {
+    withuBaseURL(baseURL: string) {
         return new ErineAPI(baseURL, this.redis);
     }
-
-    async invalidate(pattern?: string | RegExp) {
-        if (!pattern) {
+    
+    async invaliDate(pattern: string | RegExp) {
+        if(!pattern) {
             await this.clearAllTags();
             return;
         }
 
-        if (pattern instanceof RegExp) {
+        if(pattern){
             await this.clearMatchingTags(pattern);
             return;
         }
-
         await this.clearTag(pattern);
     }
-
     async revalidate(tag: string) {
         await this.clearTag(tag);
+    }
+
+    private async clearAllTags() {
+        const allTags = await this.redis.smembers(TAG_REGISTRY_KEY);
+        await Promise.all(allTags.map((tag) => this.clearTag(tag)));   
+    }
+    private async clearMatchingTags(pattern: string | RegExp) {
+        const tags = await this.redis.smembers(TAG_REGISTRY_KEY);
+        const regex =
+            typeof pattern === 'string' 
+                ? new RegExp(pattern)
+                : pattern;
+        await Promise.all(
+            tags.filter((tag) => regex.test(tag)).map((tag) => this.clearTag(tag))
+        );
+    }
+    private async clearTag(tag: string) {
+        const tagKey = `${TAG_NAMESPACE}:${tag}`;
+        const cacheKeys = await this.redis.smembers(tagKey);
+        if(cacheKeys.length) {
+            await Promise.all(cacheKeys.map((key) => this.redis.del(key)));
+        }
+
+        await this.redis.del(tagKey);
+        await this.redis.srem(TAG_REGISTRY_KEY, tag);
     }
 
     async prefetch(signal?: AbortSignal) {
@@ -110,169 +136,9 @@ export class ErineAPI {
         ]);
     }
 
-    async healthCheck(signal?: AbortSignal) {
-        return this.request<{status: string}>({url: "/health", method: "GET"}, {signal, skipCache: true});
+    async helathCheck(signal?: AbortSignal) {
+        return this.request<{status: string}>({url: '/health', method: 'GET'}, { signal, skipCache: true});
     }
 
-    async getProfile(options?: RequestOptions) {
-        return this.request<ErineProfile>({url: "/profiles", method: "GET"}, {
-            cacheKey: "profiles:single",
-            cacheTag: "profiles",
-            revalidate: options?.revalidate ?? DEFAULT_CACHE_TTL,
-            ...options,
-        });
-    }
-
-    async getGallery(options?: RequestOptions) {
-        return this.request<GalleryImage[]>({url: "/gallery", method: "GET"}, {
-            cacheKey: "gallery:all",
-            cacheTag: "gallery",
-            revalidate: options?.revalidate ?? DEFAULT_CACHE_TTL,
-            ...options,
-        });
-    }
-
-    async getSchedule(options?: RequestOptions & {limit?: number}) {
-        const events = await this.request<EventDTO[]>({url: "/events", method: "GET"}, {
-            cacheKey: "events:list",
-            cacheTag: "events",
-            revalidate: options?.revalidate ?? DEFAULT_CACHE_TTL,
-            ...options,
-        });
-
-        const schedules = events.map((event) => this.toSchedule(event));
-        if (options?.limit) {
-            return schedules.slice(0, options.limit);
-        }
-        return schedules;
-    }
-
-    async getMessages(options?: RequestOptions) {
-        return this.request<MessageRecord[]>({url: "/messages", method: "GET"}, {
-            cacheKey: "messages:list",
-            cacheTag: "messages",
-            revalidate: options?.revalidate ?? DEFAULT_CACHE_TTL,
-            ...options,
-        });
-    }
-
-    async sendMessage(payload: MessagePayload) {
-        const response = await this.request<{ok: boolean; id: string}>({
-            url: "/messages",
-            method: "POST",
-            data: payload,
-        }, {skipCache: true});
-
-        await this.revalidate("messages");
-        return response;
-    }
-
-    private toSchedule(event: EventDTO): Schedule {
-        const isoDate = this.safeISO(event.date);
-        return {
-            id: event._id ?? event.id ?? this.randomId(),
-            tiitle: event.title,
-            type: "event",
-            date: isoDate.split("T")[0],
-            startTime: event.startTime ?? "00:00",
-            endTime: event.endTime ?? "23:59",
-            location: event.location ?? "TBA",
-            description: event.description,
-            imageUrl: event.imageUrl,
-        } as Schedule;
-    }
-
-    private safeISO(value: string) {
-        const parsed = parseISO(value);
-        if (Number.isNaN(parsed.getTime())) {
-            return new Date().toISOString();
-        }
-        return parsed.toISOString();
-    }
-
-    private randomId() {
-        const generator = globalThis.crypto?.randomUUID;
-        if (generator) {
-            return generator.call(globalThis.crypto);
-        }
-        return Math.random().toString(36).slice(2);
-    }
-
-    private async request<T>(config: AxiosRequestConfig, options?: RequestOptions): Promise<T> {
-        const derivedKey = options?.cacheKey ?? this.cacheKeyFor(config);
-        const tag = options?.cacheTag ?? this.tagFromConfig(config);
-        const namespacedKey = this.namespacedKey(derivedKey, tag);
-
-        if (!options?.skipCache) {
-            const cached = await this.redis.get<T>(namespacedKey);
-            if (cached) {
-                return cached;
-            }
-        }
-
-        const response = await this.api.request<T>({...config, signal: options?.signal});
-        if (!options?.skipCache) {
-            const ttl = options?.revalidate ?? DEFAULT_CACHE_TTL;
-            await this.redis.set(namespacedKey, response.data, {px: ttl});
-            await this.trackKey(tag, namespacedKey, ttl);
-        }
-        return response.data;
-    }
-
-    private tagFromConfig(config: AxiosRequestConfig) {
-        const url = config.url ?? "default";
-        const normalized = url.replace(/^\//, "");
-        return normalized.split("/")[0] || "default";
-    }
-
-    private cacheKeyFor(config: AxiosRequestConfig) {
-        return JSON.stringify({url: config.url, method: config.method, params: config.params, data: config.data});
-    }
-
-    private namespacedKey(cacheKey: string, tag: string) {
-        return `${CACHE_NAMESPACE}${tag}:${this.hash(cacheKey)}`;
-    }
-
-    private tagKey(tag: string) {
-        return `${TAG_NAMESPACE}${tag}`;
-    }
-
-    private hash(value: string) {
-        return createHash("sha1").update(value).digest("hex");
-    }
-
-    private async trackKey(tag: string, namespacedKey: string, ttl: number) {
-        const tagKey = this.tagKey(tag);
-        await this.redis.sadd(tagKey, namespacedKey);
-        const tagTTL = Math.max(1, Math.ceil(ttl / 1000) + TAG_TTL_BUFFER_SECONDS);
-        await this.redis.expire(tagKey, tagTTL);
-        await this.redis.sadd(TAG_REGISTRY_KEY, tag);
-    }
-
-    private async clearTag(tag: string) {
-        const tagKey = this.tagKey(tag);
-        const keys = (await this.redis.smembers(tagKey)) as string[];
-        if (keys?.length) {
-            await this.redis.del(...keys);
-        }
-        await this.redis.del(tagKey);
-        await this.redis.srem(TAG_REGISTRY_KEY, tag);
-    }
-
-    private async clearAllTags() {
-        const tags = await this.getAllTags();
-        await Promise.all(tags.map((tag) => this.clearTag(tag)));
-    }
-
-    private async clearMatchingTags(pattern: RegExp) {
-        const tags = await this.getAllTags();
-        await Promise.all(tags.filter((tag) => pattern.test(tag)).map((tag) => this.clearTag(tag)));
-    }
-
-    private async getAllTags() {
-        return ((await this.redis.smembers(TAG_REGISTRY_KEY)) as string[]) ?? [];
-    }
+    
 }
-
-export const erineApi = new ErineAPI();
-export default erineApi;
